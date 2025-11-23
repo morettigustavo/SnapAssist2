@@ -53,7 +53,6 @@
             Name = "Suporte";
             Text = "SnapAssist - Suporte";
             WindowState = FormWindowState.Maximized;
-            Load += Suporte_Load;
             ((System.ComponentModel.ISupportInitialize)pictureBox1).EndInit();
             ResumeLayout(false);
         }

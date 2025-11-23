@@ -2,8 +2,10 @@ using System;
 using System.Drawing;
 using System.IO;
 using System.Net;
+using System.Text;
 using System.Windows.Forms;
 using Timer = System.Windows.Forms.Timer;
+using FluentFTP;
 
 namespace snapAssist
 {
@@ -15,8 +17,12 @@ namespace snapAssist
         private bool mouseMoved = false;
 
         private Timer timer;
-        private string ftpIp;
-        private string ftpPassword;
+        private readonly string ftpIp;
+        private readonly string ftpPassword;
+
+        Image ImageShow = null;
+        private bool isImageLoading = false;
+
         public Suporte(string ip, string password)
         {
             InitializeComponent();
@@ -25,74 +31,117 @@ namespace snapAssist
 
             this.Resize += Form1_Resize;
 
-            // Adiciona os manipuladores de eventos do mouse ao PictureBox
             this.pictureBox1.MouseClick += PictureBox1_MouseClick;
             this.pictureBox1.MouseDoubleClick += PictureBox1_MouseDoubleClick;
             this.pictureBox1.MouseDown += PictureBox1_MouseDown;
             this.pictureBox1.MouseMove += PictureBox1_MouseMove;
             this.pictureBox1.MouseUp += PictureBox1_MouseUp;
 
-            this.KeyPreview = true; // Permite que o formulário capture eventos de teclado antes dos controles
+            this.KeyPreview = true;
             this.KeyDown += Suporte_KeyDown;
 
             timer = new Timer();
-            timer.Interval = 500; // 5000 milliseconds = 5 seconds
+            timer.Interval = 500;
             timer.Tick += new EventHandler(LoadImage);
             timer.Start();
         }
-        Image ImageShow = null;
-        private bool isImageLoading = false;  // Flag para controlar se a imagem está sendo carregada
 
+        // ================================================================
+        // FLUENTFTP - CLIENTE PARA QUALQUER VERSÃO
+        // ================================================================
+        private FtpClient CreateFtpClient()
+        {
+            var client = new FtpClient(ftpIp)
+            {
+                Credentials = new NetworkCredential("SNAPASSIST", ftpPassword)
+            };
+
+            return client;
+        }
+
+        // ================================================================
+        // CARREGAR A IMAGEM DO FTP
+        // ================================================================
         private void LoadImage(object sender, EventArgs e)
         {
             if (isImageLoading)
-            {
                 return;
-            }
+
+            isImageLoading = true;
 
             try
             {
-                isImageLoading = true;
-
-                string ftpImagePath = $"ftp://{ftpIp}/screenshot.png";
-                FtpWebRequest request = (FtpWebRequest)WebRequest.Create(ftpImagePath);
-                request.Method = WebRequestMethods.Ftp.DownloadFile;
-                request.Credentials = new NetworkCredential("ftpUser", ftpPassword);
-
-                // Define o modo passivo como false para usar o modo ativo
-                request.UsePassive = false;
-
-                using (FtpWebResponse response = (FtpWebResponse)request.GetResponse())
-                using (Stream stream = response.GetResponseStream())
+                using (var client = CreateFtpClient())
                 {
-                    // Copiar o stream para um MemoryStream para abrir a imagem em modo de leitura
-                    using (MemoryStream memoryStream = new MemoryStream())
+                    client.Connect();
+
+                    using (var stream = client.OpenRead("/screenshot.png"))
                     {
-                        stream.CopyTo(memoryStream);
-                        memoryStream.Position = 0; // Reiniciar o ponteiro para o início
+                        if (stream != null)
+                        {
+                            using (var ms = new MemoryStream())
+                            {
+                                stream.CopyTo(ms);
+                                ms.Position = 0;
 
-                        pictureBox1.Image?.Dispose();
-                        pictureBox1.Image = null;
+                                pictureBox1.Image?.Dispose();
+                                pictureBox1.Image = null;
 
-                        ImageShow = Image.FromStream(memoryStream);
-                        pictureBox1.Image = ImageShow;
-                        pictureBox1.SizeMode = PictureBoxSizeMode.StretchImage;
-                        pictureBox1.Dock = DockStyle.Fill;
+                                ImageShow = Image.FromStream(ms);
+
+                                pictureBox1.Image = ImageShow;
+                                pictureBox1.SizeMode = PictureBoxSizeMode.StretchImage;
+                                pictureBox1.Dock = DockStyle.Fill;
+                            }
+                        }
                     }
+
+                    client.Disconnect();
                 }
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Erro ao carregar a imagem: {ex.Message}");
+                Console.WriteLine($"Erro FluentFTP: {ex.Message}");
             }
             finally
             {
                 isImageLoading = false;
             }
+        }
 
+        // ================================================================
+        // LOG NO FTP
+        // ================================================================
+        private void UpdateLog(string logMessage)
+        {
+            try
+            {
+                using (var client = CreateFtpClient())
+                {
+                    client.Connect();
+
+                    // Abre o arquivo remoto para append (cria se não existir)
+                    using (var stream = client.OpenAppend("/mouse_log.txt"))
+                    using (var writer = new StreamWriter(stream, Encoding.UTF8))
+                    {
+                        // Aqui já colocamos o timestamp + mensagem
+                        writer.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - {logMessage}");
+                        writer.Flush(); // garante que os dados vão para o stream
+                    }
+
+                    client.Disconnect();
+                }
+            }
+            catch (Exception)
+            {
+                // Mantém silencioso como no seu código original
+            }
         }
 
 
+        // ================================================================
+        // EVENTOS DO MOUSE E TECLADO (mantidos iguais)
+        // ================================================================
         private void Form1_Resize(object sender, EventArgs e)
         {
             pictureBox1.Size = this.ClientSize;
@@ -100,28 +149,25 @@ namespace snapAssist
 
         private void PictureBox1_MouseClick(object sender, MouseEventArgs e)
         {
-            if (!mouseMoved)
+            if (!mouseMoved && ImageShow != null)
             {
-                // Ajusta as coordenadas considerando o tamanho da imagem e o tamanho da PictureBox
                 int adjustedX = (int)(e.X * (float)ImageShow.Width / pictureBox1.Width);
                 int adjustedY = (int)(e.Y * (float)ImageShow.Height / pictureBox1.Height);
 
                 if (e.Button == MouseButtons.Left)
-                {
                     LogMouseAction($"Clique: {{X={adjustedX}, Y={adjustedY}}}");
-                }
                 else if (e.Button == MouseButtons.Right)
-                {
-                    LogMouseAction($"Clique com Botão Direito: {{X={adjustedX}, Y={adjustedY}}}");
-                }
+                    LogMouseAction($"Clique Direito: {{X={adjustedX}, Y={adjustedY}}}");
             }
         }
 
         private void PictureBox1_MouseDoubleClick(object sender, MouseEventArgs e)
         {
-            // Ajusta as coordenadas para o clique duplo
+            if (ImageShow == null) return;
+
             int adjustedX = (int)(e.X * (float)ImageShow.Width / pictureBox1.Width);
             int adjustedY = (int)(e.Y * (float)ImageShow.Height / pictureBox1.Height);
+
             LogMouseAction($"Duplo Clique: {{X={adjustedX}, Y={adjustedY}}}");
         }
 
@@ -137,113 +183,65 @@ namespace snapAssist
 
         private void PictureBox1_MouseMove(object sender, MouseEventArgs e)
         {
-            if (isDragging)
+            if (isDragging && e.Location != initialDragPoint)
             {
-                if (e.Location != initialDragPoint) // Verifica se o mouse realmente se moveu
-                {
-                    mouseMoved = true;
-                    lastCursor = e.Location; // Atualiza a posição do cursor durante o arrasto
-                }
+                mouseMoved = true;
+                lastCursor = e.Location;
             }
         }
 
         private void PictureBox1_MouseUp(object sender, MouseEventArgs e)
         {
-            if (isDragging && mouseMoved)
+            if (isDragging && mouseMoved && ImageShow != null)
             {
                 isDragging = false;
 
-                // Ajusta as coordenadas do início e do final do arrasto
                 int adjustedStartX = (int)(initialDragPoint.X * (float)ImageShow.Width / pictureBox1.Width);
                 int adjustedStartY = (int)(initialDragPoint.Y * (float)ImageShow.Height / pictureBox1.Height);
                 int adjustedEndX = (int)(lastCursor.X * (float)ImageShow.Width / pictureBox1.Width);
                 int adjustedEndY = (int)(lastCursor.Y * (float)ImageShow.Height / pictureBox1.Height);
 
-                string action = $"Arrastando: {{X={adjustedStartX}, Y={adjustedStartY}}} até {{X={adjustedEndX}, Y={adjustedEndY}}}";
-                LogMouseAction(action);
+                LogMouseAction($"Arrasto: {{X={adjustedStartX}, Y={adjustedStartY}}} -> {{X={adjustedEndX}, Y={adjustedEndY}}}");
             }
-            else
-            {
-                isDragging = false;
-            }
+
+            isDragging = false;
         }
-
-
 
         private void LogMouseAction(string action)
         {
-            string logMessage = $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - {action}";
-            UpdateLog(logMessage);
+            UpdateLog(action);
         }
 
         private void Suporte_KeyDown(object sender, KeyEventArgs e)
         {
-            // Verifica se a tecla pressionada é uma letra
+            string k;
+
             if (e.KeyCode >= Keys.A && e.KeyCode <= Keys.Z)
             {
-                // Verifica se o Caps Lock está ativo e se a tecla Shift não está pressionada
-                bool isCapsLockActive = Control.IsKeyLocked(Keys.CapsLock);
+                bool caps = Control.IsKeyLocked(Keys.CapsLock);
 
-                // Se o Caps Lock estiver ativado, ou se a tecla Shift estiver pressionada, a letra será maiúscula
-                if (isCapsLockActive ^ e.Shift) // XOR lógico: CapsLock e Shift não podem estar ambos ativados ou desativados simultaneamente
-                {
-                    // Maiúscula
-                    string keyAction = $"Tecla Pressionada: {e.KeyCode.ToString()}";
-                    UpdateLog(keyAction);
-                }
+                if (caps ^ e.Shift)
+                    k = e.KeyCode.ToString();
                 else
-                {
-                    // Minúscula
-                    string keyAction = $"Tecla Pressionada: {e.KeyCode.ToString().ToLower()}";
-                    UpdateLog(keyAction);
-                }
+                    k = e.KeyCode.ToString().ToLower();
             }
             else
             {
-                // Para outras teclas, apenas registra a tecla normalmente
-                string keyAction = $"Tecla Pressionada: {e.KeyCode}";
-                UpdateLog(keyAction);
+                k = e.KeyCode.ToString();
             }
+
+            UpdateLog($"Tecla: {k}");
         }
 
-
-        private void UpdateLog(string logMessage)
+        protected override void OnFormClosed(FormClosedEventArgs e)
         {
-            try
+            if (timer != null)
             {
-                string ftpLogPath = $"ftp://{ftpIp}/mouse_log.txt";
-
-                FtpWebRequest request = (FtpWebRequest)WebRequest.Create(ftpLogPath);
-                request.Method = WebRequestMethods.Ftp.AppendFile; // Usar "AppendFile" para adicionar dados ao arquivo existente
-                request.UsePassive = false;
-                request.Credentials = new NetworkCredential("ftpUser", ftpPassword);
-
-                using (Stream requestStream = request.GetRequestStream())
-                {
-                    using (StreamWriter writer = new StreamWriter(requestStream))
-                    {
-                        writer.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - {logMessage}");
-                    }
-                }
-
-                using (FtpWebResponse response = (FtpWebResponse)request.GetResponse())
-                {
-
-                }
+                timer.Stop();
+                timer.Dispose();
             }
-            catch (Exception ex)
-            {
-            }
-        }
 
-
-        private void Suporte_Load(object sender, EventArgs e)
-        {
-        }
-
-        private void button1_Click(object sender, EventArgs e)
-        {
-
+            base.OnFormClosed(e);
         }
     }
 }

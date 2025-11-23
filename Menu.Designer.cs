@@ -39,6 +39,7 @@
             label6 = new Label();
             textBox2 = new TextBox();
             label7 = new Label();
+            button1 = new Button();
             SuspendLayout();
             // 
             // button2
@@ -65,9 +66,9 @@
             label1.AutoSize = true;
             label1.Location = new Point(40, 33);
             label1.Name = "label1";
-            label1.Size = new Size(127, 20);
+            label1.Size = new Size(54, 20);
             label1.TabIndex = 3;
-            label1.Text = "Meu Identificador";
+            label1.Text = "Meu IP";
             // 
             // label2
             // 
@@ -83,9 +84,9 @@
             label3.AutoSize = true;
             label3.Location = new Point(240, 33);
             label3.Name = "label3";
-            label3.Size = new Size(207, 20);
+            label3.Size = new Size(156, 20);
             label3.TabIndex = 5;
-            label3.Text = "Digite o identificador terceiro";
+            label3.Text = "Digite o IP do terceiro";
             // 
             // label4
             // 
@@ -110,9 +111,9 @@
             label6.AutoSize = true;
             label6.Location = new Point(239, 103);
             label6.Name = "label6";
-            label6.Size = new Size(207, 20);
+            label6.Size = new Size(181, 20);
             label6.TabIndex = 9;
-            label6.Text = "Digite o identificador terceiro";
+            label6.Text = "Digite a senha do terceiro";
             // 
             // textBox2
             // 
@@ -132,11 +133,22 @@
             label7.Text = "Inicializando..";
             label7.TextAlign = ContentAlignment.TopRight;
             // 
+            // button1
+            // 
+            button1.Location = new Point(40, 185);
+            button1.Name = "button1";
+            button1.Size = new Size(112, 29);
+            button1.TabIndex = 11;
+            button1.Text = "Copiar Senha";
+            button1.UseVisualStyleBackColor = true;
+            button1.Click += button1_Click;
+            // 
             // Menu
             // 
             AutoScaleDimensions = new SizeF(8F, 20F);
             AutoScaleMode = AutoScaleMode.Font;
             ClientSize = new Size(466, 269);
+            Controls.Add(button1);
             Controls.Add(label7);
             Controls.Add(label6);
             Controls.Add(textBox2);
@@ -167,5 +179,6 @@
         private Label label6;
         private TextBox textBox2;
         private Label label7;
+        private Button button1;
     }
 }

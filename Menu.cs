@@ -1,16 +1,22 @@
+using FluentFTP;
 using System;
 using System.Diagnostics;
+using System.DirectoryServices;
 using System.Net;
-using System.Reflection.Emit;
+using System.Security.Cryptography;
+using System.Text;
 using System.Timers;
 using System.Windows.Forms;
-using static System.Net.WebRequestMethods;
-using static System.Windows.Forms.VisualStyles.VisualStyleElement;
+using System.Drawing; // para Point
+using System.Threading; // se for usar algo depois
+using System.Net.Sockets;
 
 namespace snapAssist
 {
     public partial class Menu : Form
     {
+        public string Password = "";
+
         Form FormOpen = null;
         private System.Timers.Timer ftpCheckTimer;
 
@@ -18,106 +24,93 @@ namespace snapAssist
         {
             InitializeComponent();
             this.Load += new EventHandler(Menu_Load);
-            this.FormClosing += new FormClosingEventHandler(Menu_FormClosing); // Conectar evento de fechamento
+            this.FormClosing += new FormClosingEventHandler(Menu_FormClosing);
         }
 
-        private async void Menu_Load(object sender, EventArgs e)
+        private void Menu_Load(object sender, EventArgs e)
         {
             try
             {
-                RemoveFtpConfiguration();
-
                 string localIP = GetLocalIPAddress();
-                label2.Text = localIP; 
-                string randomPassword = GenerateRandomPassword(); // Gerar senha
-                label5.Text = randomPassword; 
+                label2.Text = localIP;
 
-                // Inicializar o Timer
-                ftpCheckTimer = new System.Timers.Timer(10000); // 10 segundos (10000 ms)
-                ftpCheckTimer.Elapsed += FtpCheckTimer_Elapsed;
-                ftpCheckTimer.Start(); 
-
-                // Configuração do FTP
-                await Task.Run(() =>
-                {
-                    // Adicionando a regra de firewall para permitir conexões FTP na porta 21
-                    ExecuteCommand("netsh advfirewall firewall add rule name=\"FTP\" protocol=TCP dir=in localport=21 action=allow");
-
-                    // Habilitando os recursos necessários para o servidor FTP no Windows
-                    ExecuteCommand("dism /online /enable-feature /featurename:IIS-FTPServer /all");
-                    ExecuteCommand("dism /online /enable-feature /featurename:IIS-WebServerRole /all");
-                    ExecuteCommand("dism /online /enable-feature /featurename:IIS-FTPExtensibility /all");
-
-                    // Criando o diretório FTP
-                    ExecuteCommand("mkdir C:\\FTP");
-
-                    // Criando o site FTP no IIS
-                    ExecuteCommand($"powershell -Command \"Import-Module WebAdministration; New-WebFtpSite -Name '{localIP}' -Port 21 -PhysicalPath 'C:\\FTP' -Force\"");
-
-                    // Configurando a vinculação do site FTP para a porta 21 no IP local
-                    ExecuteCommand($"powershell -Command \"Set-ItemProperty IIS:\\Sites\\{localIP} -Name Bindings -Value @{{'protocol'='ftp';'bindingInformation'='*:21:0.0.0.0'}}\"");
-
-                    // Criando o usuário 'ftpUser' e atribuindo uma senha
-                    string ftpUserName = "ftpUser";
-                    ExecuteCommand($"net user {ftpUserName} {randomPassword} /add");
-
-                    // Definindo permissões de leitura e escrita para o diretório FTP
-                    ExecuteCommand($"powershell -Command \"$acl = Get-Acl 'C:\\FTP'; $rule = New-Object System.Security.AccessControl.FileSystemAccessRule('{ftpUserName}', 'Read,Write', 'Allow'); $acl.SetAccessRule($rule); Set-Acl 'C:\\FTP' $acl\"");
-
-                    // Desabilitando a autenticação anônima para o FTP
-                    ExecuteCommand("powershell -Command \"Set-WebConfigurationProperty -pspath 'MACHINE/WEBROOT/APPHOST' -filter 'system.ftpServer/security/authentication/anonymousAuthentication' -name enabled -value false\"");
-
-                    // Configurando SSL para o FTP (sem criptografia para o controle e dados)
-                    ExecuteCommand($"powershell -Command \"Import-Module WebAdministration; Set-ItemProperty -Path 'IIS:\\Sites\\{localIP}' -Name 'ftpServer.security.ssl.controlChannelPolicy' -Value 0; Set-ItemProperty -Path 'IIS:\\Sites\\{localIP}' -Name 'ftpServer.security.ssl.dataChannelPolicy' -Value 0\"");
-
-                    // Adicionando a configuração de autorização no IIS para permitir leitura e escrita para o usuário "ftpuser"
-                    ExecuteCommand($"powershell -Command \"Import-Module WebAdministration; Add-WebConfigurationProperty -Filter '/system.ftpServer/security/authorization' -Name '.' -Value @{{accessType='Allow'; users='*'; permissions='Read, Write'}} -PSPath 'IIS:\\'\"");
-
-                    // Iniciando e reiniciando o site FTP
-                    ExecuteCommand($"powershell -Command \"Start-WebItem 'IIS:\\Sites\\{localIP}'\"");
-                    ExecuteCommand($"powershell -Command \"Restart-WebItem 'IIS:\\Sites\\{localIP}'\"");
-                });
+                string randomPassword = GenerateStrongPassword(); // Gerar senha
+                Password = randomPassword;
+                label5.Text = randomPassword;
 
                 label7.Text = "Pronto para conexão!";
                 label7.Location = new Point(10, this.ClientSize.Height - label7.Height - 10);
 
+                // Atualiza a senha do usuário local SNAPASSIST (para RDP/uso local)
+                ResetLocalUserPassword("SNAPASSIST", randomPassword);
 
+                // === NOVO: Timer para detectar se está sendo acessado via FTP (porta 21) ===
+                ftpCheckTimer = new System.Timers.Timer(10000); // verifica a cada 10s
+                ftpCheckTimer.Elapsed += FtpCheckTimer_Elapsed;
+                ftpCheckTimer.Start();
             }
-            catch (Exception ex)
+            catch (Exception)
             {
             }
         }
 
-        private string GenerateRandomPassword(int length = 8)
+        public static void ResetLocalUserPassword(string username, string newPassword)
         {
-            const string valid = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890";
-            Random random = new Random();
-            char[] res = new char[length];
-
-            for (int i = 0; i < length; i++)
+            using (var machine = new DirectoryEntry("WinNT://" + Environment.MachineName))
+            using (var user = machine.Children.Find(username, "User"))
             {
-                res[i] = valid[random.Next(valid.Length)];
+                user.Invoke("SetPassword", new object[] { newPassword });
+                user.CommitChanges();
             }
-            string password = new string(res);
-            return new string(password);
         }
 
-        private void ExecuteCommand(string command)
+        private string GenerateStrongPassword(int length = 10)
         {
-            try
+            const string upper = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+            const string lower = "abcdefghijklmnopqrstuvwxyz";
+            const string digits = "0123456789";
+            const string special = "!@#$%^&*()-_=+[]{}<>?";
+
+            string allChars = upper + lower + digits + special;
+
+            StringBuilder password = new StringBuilder();
+            password.Append(GetRandomChar(upper));
+            password.Append(GetRandomChar(lower));
+            password.Append(GetRandomChar(digits));
+            password.Append(GetRandomChar(special));
+
+            for (int i = password.Length; i < length; i++)
+                password.Append(GetRandomChar(allChars));
+
+            return Shuffle(password.ToString());
+        }
+
+        private char GetRandomChar(string chars)
+        {
+            byte[] buffer = new byte[1];
+            using (var rng = RandomNumberGenerator.Create())
             {
-                Process process = new Process();
-                process.StartInfo.FileName = "cmd.exe";
-                process.StartInfo.Arguments = "/C " + command;
-                process.StartInfo.RedirectStandardOutput = true;
-                process.StartInfo.UseShellExecute = false;
-                process.StartInfo.CreateNoWindow = true;
-                process.Start();
-                process.WaitForExit();
+                rng.GetBytes(buffer);
             }
-            catch (Exception ex)
+
+            return chars[buffer[0] % chars.Length];
+        }
+
+        private string Shuffle(string input)
+        {
+            var array = input.ToCharArray();
+            var rng = RandomNumberGenerator.Create();
+            byte[] box = new byte[1];
+
+            for (int i = array.Length - 1; i > 0; i--)
             {
+                rng.GetBytes(box);
+                int j = box[0] % (i + 1);
+
+                (array[i], array[j]) = (array[j], array[i]);
             }
+
+            return new string(array);
         }
 
         private string GetLocalIPAddress()
@@ -125,7 +118,7 @@ namespace snapAssist
             var host = Dns.GetHostEntry(Dns.GetHostName());
             foreach (var ip in host.AddressList)
             {
-                if (ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)
+                if (ip.AddressFamily == AddressFamily.InterNetwork)
                 {
                     return ip.ToString();
                 }
@@ -135,95 +128,31 @@ namespace snapAssist
 
         private void Menu_FormClosing(object sender, FormClosingEventArgs e)
         {
-            RemoveFtpConfiguration();
+            try
+            {
+                if (ftpCheckTimer != null)
+                {
+                    ftpCheckTimer.Stop();
+                    ftpCheckTimer.Dispose();
+                    ftpCheckTimer = null;
+                }
+            }
+            catch { }
 
             Application.Exit();
         }
 
-        private void RemoveFtpConfiguration()
+        // =========================================================================
+        // BOTÃO "CONECTAR" (lado suporte) – tenta conectar no FTP informado e abre o Suporte
+        // =========================================================================
+        private void button2_Click(object sender, EventArgs e)
         {
-            try
-            {
-                string localIP = GetLocalIPAddress();
-
-                // Remover o site FTP no IIS
-                ExecuteCommand($"powershell -Command \"Import-Module WebAdministration; if (Get-Website -Name '{localIP}') {{ Remove-Website -Name '{localIP}' }}\"");
-
-                // Remover regras de firewall criadas
-                ExecuteCommand("netsh advfirewall firewall delete rule name=\"FTP\"");
-
-                // Excluir o usuário FTP
-                string ftpUserName = "ftpUser"; // Nome do usuário FTP
-                ExecuteCommand($"net user {ftpUserName} /delete");
-
-                // Remover a pasta FTP, se necessário
-                ExecuteCommand("rmdir /S /Q C:\\FTP"); 
-
-            }
-            catch (Exception ex)
-            {
-            }
-        }
-
-        private bool IsFtpUserConnected()
-        {
-            try
-            {
-                // Comando PowerShell para verificar as conexões ativas na porta 21 (FTP)
-                string command = @"
-            $connections = Get-NetTCPConnection | Where-Object { $_.LocalPort -eq 21 }
-            if ($connections) {
-                $validConnections = $connections | Where-Object { $_.RemoteAddress -ne '::' -and $_.RemoteAddress }
-                if ($validConnections) {
-                    $validConnections | ForEach-Object { $_.RemoteAddress }
-                } else {
-                     Write-Host 'Nao ha conexoes'
-                }
-            } else {
-                Write-Host 'Nao ha conexoes ativas no FTP.'
-            }";
-
-                // Iniciar o processo PowerShell
-                ProcessStartInfo psi = new ProcessStartInfo("powershell", "-Command " + command)
-                {
-                    RedirectStandardOutput = true,
-                    UseShellExecute = false,
-                    CreateNoWindow = true
-                };
-
-                Process process = Process.Start(psi);
-                string output = process.StandardOutput.ReadToEnd();
-                process.WaitForExit();
-
-                // Corrigir problemas de codificação e espaços extras
-                output = output.Trim();
-
-                // Verificar se a saída contém a mensagem de "sem conexões"
-                if (output.Contains("Nao ha conexoes ativas no FTP.") || output.Contains("Nao ha conexoes"))
-                {
-                    return false; // Não há conexões ativas
-                }
-                else
-                {
-                    // Se houver conexões ativas, exibir a mensagem de conexões
-                    return true; // Há conexões ativas
-                }
-            }
-            catch (Exception ex)
-            {
-                return false;
-            }
-        }
-
-        private async void button2_Click(object sender, EventArgs e)
-        {
-            string ftpIp = textBox1.Text;  
+            string ftpIp = textBox1.Text;
             string ftpPassword = textBox2.Text;
 
             try
             {
-                // Tentar conectar ao FTP
-                bool isConnected = await TryConnectToFtpAsync(ftpIp, ftpPassword);
+                bool isConnected = TryConnectToFtp(ftpIp, ftpPassword);
 
                 if (isConnected)
                 {
@@ -235,29 +164,36 @@ namespace snapAssist
                     MessageBox.Show("Falha ao conectar. Verifique o IP e a senha.");
                 }
             }
-            catch (Exception ex)
+            catch (Exception)
             {
             }
         }
 
-        private async Task<bool> TryConnectToFtpAsync(string ip, string password)
+        private bool TryConnectToFtp(string ip, string password)
         {
+            var client = new FtpClient(ip)
+            {
+                // Aqui o usuário é SNAPASSIST, de acordo com sua versão nova
+                Credentials = new NetworkCredential("SNAPASSIST", password)
+            };
+
             try
             {
-                string ftpAddress = $"ftp://{ip}/";
-                var ftpRequest = (FtpWebRequest)WebRequest.Create(ftpAddress);
-                ftpRequest.Method = WebRequestMethods.Ftp.ListDirectory;
-                ftpRequest.Credentials = new NetworkCredential("ftpUser", password);
+                client.Connect();
+                Console.WriteLine("Conexão FTP OK!");
 
-                ftpRequest.UsePassive = true;
-
-                using (FtpWebResponse response = (FtpWebResponse)await ftpRequest.GetResponseAsync())
+                // Testa um Listagem no root para validar
+                foreach (var item in client.GetListing("/"))
                 {
-                    return true;
+                    Console.WriteLine($"{item.Type} - {item.FullName}");
                 }
+
+                client.Disconnect();
+                return true;
             }
             catch (Exception ex)
             {
+                Console.WriteLine("Erro ao conectar: " + ex.Message);
                 return false;
             }
         }
@@ -274,46 +210,128 @@ namespace snapAssist
                 FormOpen = NewForm;
                 FormOpen.Show();
             }
-            catch (Exception ex) { }
+            catch (Exception)
+            {
+            }
         }
 
-        private string GetFtpUserConnectedIp()
+        private void button1_Click(object sender, EventArgs e)
         {
-            foreach (var ip in System.Net.Dns.GetHostAddresses(System.Net.Dns.GetHostName()))
+            if (!string.IsNullOrEmpty(Password))
             {
-                if (ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)
-                {
-                    return ip.ToString();  
-                }
+                Clipboard.SetText(Password);
             }
-            return null;
+        }
+
+        // =========================================================================
+        // DETECÇÃO AUTOMÁTICA DE ACESSO (LÓGICA DO MENU ANTIGO)
+        // =========================================================================
+
+        // Verifica se há conexões TCP ativas na porta 21 (FTP)
+        private bool IsFtpUserConnected()
+        {
+            try
+            {
+                // Comando PowerShell que retorna os IPs remotos conectados na porta 21
+                string command = @"
+$connections = Get-NetTCPConnection | Where-Object { $_.LocalPort -eq 21 -and $_.State -eq 'Established' }
+if ($connections) {
+    $validConnections = $connections | Where-Object { $_.RemoteAddress -ne '::' -and $_.RemoteAddress }
+    if ($validConnections) {
+        $validConnections | ForEach-Object { $_.RemoteAddress }
+    } else {
+        Write-Host 'Nao ha conexoes'
+    }
+} else {
+    Write-Host 'Nao ha conexoes ativas no FTP.'
+}";
+
+                ProcessStartInfo psi = new ProcessStartInfo("powershell", "-Command " + command)
+                {
+                    RedirectStandardOutput = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                };
+
+                Process process = Process.Start(psi);
+                string output = process.StandardOutput.ReadToEnd();
+                process.WaitForExit();
+
+                output = output.Trim();
+
+                if (output.Contains("Nao ha conexoes ativas no FTP.") || output.Contains("Nao ha conexoes") || string.IsNullOrWhiteSpace(output))
+                {
+                    return false;
+                }
+
+                // Se chegou aqui é porque veio algum IP remoto na saída
+                return true;
+            }
+            catch (Exception)
+            {
+                return false;
+            }
+        }
+
+        // (Opcional) Pega o IP remoto conectado na porta 21 para exibir no Cliente / log
+        private string GetRemoteFtpClientIp()
+        {
+            try
+            {
+                string command = @"
+$connections = Get-NetTCPConnection | Where-Object { $_.LocalPort -eq 21 -and $_.State -eq 'Established' }
+$valid = $connections | Where-Object { $_.RemoteAddress -ne '::' -and $_.RemoteAddress }
+if ($valid) {
+    $valid | Select-Object -First 1 -ExpandProperty RemoteAddress
+}";
+
+                ProcessStartInfo psi = new ProcessStartInfo("powershell", "-Command " + command)
+                {
+                    RedirectStandardOutput = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                };
+
+                Process process = Process.Start(psi);
+                string output = process.StandardOutput.ReadToEnd();
+                process.WaitForExit();
+
+                output = output.Trim();
+                return string.IsNullOrWhiteSpace(output) ? null : output;
+            }
+            catch
+            {
+                return null;
+            }
         }
 
         private void FtpCheckTimer_Elapsed(object sender, ElapsedEventArgs e)
         {
             try
             {
-                if (IsFtpUserConnected())
+                if (!IsFtpUserConnected())
+                    return;
+
+                string remoteIp = GetRemoteFtpClientIp();
+
+                this.Invoke((MethodInvoker)delegate
                 {
-                    string ftpIp = GetFtpUserConnectedIp();
+                    this.WindowState = FormWindowState.Minimized;
 
-                    // Se houver uma conexão ativa, abrir o formulário Cliente
-                    this.Invoke((MethodInvoker)delegate
+                    if (FormOpen == null || FormOpen.IsDisposed)
                     {
-                        this.WindowState = FormWindowState.Minimized;
+                        // Aqui abrimos o Cliente com o IP do remoto (se não conseguir, usa o IP local)
+                        string ipToShow = !string.IsNullOrEmpty(remoteIp) ? remoteIp : GetLocalIPAddress();
 
-                        if (FormOpen == null || FormOpen.IsDisposed)
-                        {
-                            Cliente cl = new Cliente(ftpIp);
-                            OpenForm(cl); 
-                        }
-                    });
-                }
+                        // Cliente hoje recebe (ip, password) – o password é o que você já gerou no Menu
+                        Cliente cl = new Cliente(ipToShow, Password);
+                        OpenForm(cl);
+                    }
+                });
             }
-            catch (Exception ex)
+            catch (Exception)
             {
             }
         }
-
     }
 }

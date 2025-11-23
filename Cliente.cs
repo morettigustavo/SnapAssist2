@@ -1,12 +1,16 @@
 ﻿using System;
 using System.Drawing;
+using System.Drawing.Imaging;
 using System.IO;
+using System.Net;
+using System.Text;
 using System.Text.RegularExpressions;
 using System.Windows.Forms;
 using System.Threading;
 using System.Collections.Generic;
 using Timer = System.Windows.Forms.Timer;
 using System.Runtime.InteropServices;
+using FluentFTP;
 
 namespace snapAssist
 {
@@ -14,8 +18,12 @@ namespace snapAssist
     {
         private Timer timer;
 
+        private readonly string ftpIp;
+        private readonly string ftpPassword;
+
         [DllImport("user32.dll", CharSet = CharSet.Auto)]
         private static extern short VkKeyScan(char ch);
+
         [DllImport("user32.dll")]
         private static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);
 
@@ -24,12 +32,31 @@ namespace snapAssist
 
         [DllImport("user32.dll")]
         private static extern IntPtr SetForegroundWindow(IntPtr hWnd);
-        public Cliente(string ip)
+
+        // Ajustei o construtor para receber IP e senha do FTP
+        public Cliente(string ip, string password)
         {
             InitializeComponent();
+
+            this.ftpIp = ip;
+            this.ftpPassword = password;
+
             InitializeTimer();
             label1.Text = $"SnapAssist sendo acessado pelo IP: {ip}";
             label1.TextAlign = ContentAlignment.MiddleCenter;
+        }
+
+        // ================================================================
+        // FLUENTFTP - CLIENTE
+        // ================================================================
+        private FtpClient CreateFtpClient()
+        {
+            var client = new FtpClient(ftpIp)
+            {
+                Credentials = new NetworkCredential("SNAPASSIST", ftpPassword)
+            };
+
+            return client;
         }
 
         private void InitializeTimer()
@@ -39,39 +66,38 @@ namespace snapAssist
             timer.Tick += new EventHandler(Timer_Tick);
             timer.Start();
         }
+
         private void Timer_Tick(object sender, EventArgs e)
         {
             CaptureScreen();
             ProcessMouseAndKeyboardLog();
         }
 
+        // ================================================================
+        // CAPTURA DE TELA E ENVIO PARA FTP
+        // ================================================================
         private void CaptureScreen()
         {
             try
             {
-                // Define os limites da tela
                 Rectangle bounds = Screen.GetBounds(Point.Empty);
+
                 using (Bitmap bitmap = new Bitmap(bounds.Width, bounds.Height))
                 {
                     using (Graphics g = Graphics.FromImage(bitmap))
                     {
-                        // Captura a tela
                         g.CopyFromScreen(Point.Empty, Point.Empty, bounds.Size);
 
-                        // Obtém a posição do mouse
                         Point mousePosition = Cursor.Position;
-
-                        // Desenha o ponteiro do mouse na captura
                         DrawCursor(g, mousePosition);
                     }
 
-                    // Salvar a captura de tela
                     SaveScreenshotToFTP(bitmap);
                 }
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"Erro ao capturar a tela: {ex.Message}");
+                //MessageBox.Show($"Erro ao capturar a tela: {ex.Message}");
             }
         }
 
@@ -79,58 +105,96 @@ namespace snapAssist
         {
             try
             {
-                string ftpDirectory = @"C:\FTP";
-
-                if (!Directory.Exists(ftpDirectory))
+                using (var client = CreateFtpClient())
                 {
-                    Directory.CreateDirectory(ftpDirectory);
+                    client.Connect();
+
+                    using (var ms = new MemoryStream())
+                    {
+                        bitmap.Save(ms, ImageFormat.Png);
+                        ms.Position = 0;
+
+                        // Envia para /screenshot.png (sobrescrevendo sempre)
+                        client.UploadStream(ms, "/screenshot.png", FtpRemoteExists.Overwrite, true);
+                    }
+
+                    client.Disconnect();
                 }
-
-                string fileName = Path.Combine(ftpDirectory, "screenshot.png");
-
-                // Salva a imagem no diretório FTP
-                bitmap.Save(fileName);
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"Erro ao salvar a captura de tela: {ex.Message}");
+                MessageBox.Show($"Erro ao enviar a captura de tela para o FTP: {ex.Message}");
             }
         }
 
         private void DrawCursor(Graphics g, Point mousePosition)
         {
-            // Desenha o cursor do mouse
-            Cursor cursor = Cursors.Default; 
-            int cursorX = mousePosition.X - cursor.Size.Width / 2; // Centraliza o cursor
+            Cursor cursor = Cursors.Default;
+            int cursorX = mousePosition.X - cursor.Size.Width / 2;
             int cursorY = mousePosition.Y - cursor.Size.Height / 2;
 
-            // Desenha o cursor na imagem capturada
             cursor.Draw(g, new Rectangle(cursorX, cursorY, cursor.Size.Width, cursor.Size.Height));
         }
 
+        // ================================================================
+        // LEITURA DO LOG NO FTP E PROCESSAMENTO
+        // ================================================================
         private void ProcessMouseAndKeyboardLog()
         {
-            string filePath = @"C:\FTP\mouse_log.txt";
-            if (!File.Exists(filePath))
+            try
             {
-                return;
+                using (var client = CreateFtpClient())
+                {
+                    client.Connect();
+
+                    // Se não existir log ainda, não faz nada
+                    if (!client.FileExists("/mouse_log.txt"))
+                    {
+                        client.Disconnect();
+                        return;
+                    }
+
+                    var lines = new List<string>();
+
+                    // Baixa o conteúdo do mouse_log.txt para memória
+                    using (var stream = client.OpenRead("/mouse_log.txt"))
+                    using (var reader = new StreamReader(stream, Encoding.UTF8))
+                    {
+                        while (!reader.EndOfStream)
+                        {
+                            var line = reader.ReadLine();
+                            if (!string.IsNullOrWhiteSpace(line))
+                                lines.Add(line);
+                        }
+                    }
+
+                    // Depois de ler tudo, apagamos o arquivo remoto
+                    // para evitar reprocessar os mesmos eventos
+                    client.DeleteFile("/mouse_log.txt");
+
+                    client.Disconnect();
+
+                    // Processa os eventos localmente
+                    foreach (var line in lines)
+                    {
+                        ProcessEvent(line);
+                        Thread.Sleep(200);
+                    }
+                }
             }
-
-            List<string> lines = new List<string>(File.ReadAllLines(filePath));
-
-            while (lines.Count > 0)
+            catch (Exception ex)
             {
-                string line = lines[0];
-                ProcessEvent(line);
-                lines.RemoveAt(0);
-                File.WriteAllLines(filePath, lines);
-                Thread.Sleep(200);
+                // Se der erro de conexão / leitura, só ignora nesta rodada
+                Console.WriteLine($"Erro ao processar log do FTP: {ex.Message}");
             }
         }
 
-        // Processa o evento detectado no log
+        // ================================================================
+        // INTERPRETAÇÃO DO EVENTO
+        // ================================================================
         private void ProcessEvent(string line)
         {
+            // Regex ignora o timestamp no começo, pois só procura o padrão específico
             var clickRegex = new Regex(@"Clique: {X=(\d+), Y=(\d+)}");
             var dragRegex = new Regex(@"Arrastando: {X=(\d+), Y=(\d+)} até {X=(\d+), Y=(\d+)}");
             var doubleClickRegex = new Regex(@"Duplo Clique: {X=(\d+), Y=(\d+)}");
@@ -165,18 +229,20 @@ namespace snapAssist
                 string key = match.Groups[1].Value;
 
                 if (key == "Capital" || key == "ShiftKey")
-                {
-                    return;  // Não faz nada se for Capital ou ShiftKey
-                }
+                    return;
+
                 SimulateKeyPress(key);
             }
         }
+
+        // ================================================================
+        // SIMULAÇÃO DE TECLADO
+        // ================================================================
         private void SimulateKeyPress(string key)
         {
             byte vkCode;
             bool shiftRequired = false;
 
-            // Trata separadamente teclas como espaço, enter, tab, backspace, etc.
             switch (key)
             {
                 case "Space":
@@ -225,7 +291,6 @@ namespace snapAssist
                     char upperKey = char.ToUpper(key[0]);
                     vkCode = (byte)VkKeyScan(upperKey);
 
-                    // Verifica se a tecla precisa do Shift para ser maiúscula
                     if (char.IsUpper(key[0]))
                     {
                         shiftRequired = true;
@@ -236,54 +301,47 @@ namespace snapAssist
             const uint KEYEVENTF_KEYDOWN = 0x0000;
             const uint KEYEVENTF_KEYUP = 0x0002;
 
-            // Simula o pressionamento da tecla Shift se necessário
             if (shiftRequired)
             {
                 keybd_event((byte)Keys.ShiftKey, 0, KEYEVENTF_KEYDOWN, UIntPtr.Zero);
             }
 
-            // Simula o pressionamento da tecla
             keybd_event(vkCode, 0, KEYEVENTF_KEYDOWN, UIntPtr.Zero);
             Thread.Sleep(50);
             keybd_event(vkCode, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
 
-            // Libera a tecla Shift se foi pressionada
             if (shiftRequired)
             {
                 keybd_event((byte)Keys.ShiftKey, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
             }
         }
 
-
-
-
-
+        // ================================================================
+        // SIMULAÇÃO DE MOUSE
+        // ================================================================
         private void MouseClick(int x, int y)
         {
-            Cursor.Position = new System.Drawing.Point(x, y);
+            Cursor.Position = new Point(x, y);
             MouseEvent(MouseEventFlags.LeftDown);
-            Thread.Sleep(100); // Atraso entre os eventos
+            Thread.Sleep(100);
             MouseEvent(MouseEventFlags.LeftUp);
             Console.WriteLine($"Clique em {x}, {y}");
         }
 
-        // Função para simular arrasto do mouse
         private void MouseDrag(int startX, int startY, int endX, int endY)
         {
-            Cursor.Position = new System.Drawing.Point(startX, startY);
+            Cursor.Position = new Point(startX, startY);
             MouseEvent(MouseEventFlags.LeftDown);
-            Thread.Sleep(100); // Atraso entre os eventos
-            Cursor.Position = new System.Drawing.Point(endX, endY);
-            Thread.Sleep(100); // Atraso entre os eventos
+            Thread.Sleep(100);
+            Cursor.Position = new Point(endX, endY);
+            Thread.Sleep(100);
             MouseEvent(MouseEventFlags.LeftUp);
             Console.WriteLine($"Arrastando de {startX}, {startY} até {endX}, {endY}");
         }
 
-        // Função para simular duplo clique do mouse
         private void MouseDoubleClick(int x, int y)
         {
-            // Simulando duplo clique do mouse
-            Cursor.Position = new System.Drawing.Point(x, y);
+            Cursor.Position = new Point(x, y);
             MouseEvent(MouseEventFlags.LeftDown);
             Thread.Sleep(100);
             MouseEvent(MouseEventFlags.LeftUp);
@@ -299,7 +357,6 @@ namespace snapAssist
             mouse_event((int)value, 0, 0, 0, 0);
         }
 
-        // Definição das flags de eventos do mouse
         [Flags]
         public enum MouseEventFlags : int
         {
@@ -314,23 +371,16 @@ namespace snapAssist
             XDown = 0x0080,
             XUp = 0x0100
         }
+
         private void Cliente_Load(object sender, EventArgs e)
         {
-            // Centralizar horizontalmente e posicionar no topo
             int screenWidth = Screen.PrimaryScreen.Bounds.Width;
-            int screenHeight = Screen.PrimaryScreen.Bounds.Height;
-
             int formWidth = this.Width;
-            int formHeight = this.Height;
 
-            // Definir a posição do formulário (centrado horizontalmente e no topo da tela)
             this.Location = new Point((screenWidth - formWidth) / 2, 0);
-
-
         }
 
-        // Importando a função mouse_event da User32.dll
-        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        [DllImport("user32.dll")]
         public static extern void mouse_event(int dwFlags, int dx, int dy, int dwData, int dwExtraInfo);
     }
 }

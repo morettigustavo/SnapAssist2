@@ -62,7 +62,7 @@ namespace snapAssist
         private void InitializeTimer()
         {
             timer = new Timer();
-            timer.Interval = 500; // Intervalo de 500ms
+            timer.Interval = 1; // Intervalo de 500ms
             timer.Tick += new EventHandler(Timer_Tick);
             timer.Start();
         }
@@ -196,9 +196,10 @@ namespace snapAssist
         {
             // Regex ignora o timestamp no começo, pois só procura o padrão específico
             var clickRegex = new Regex(@"Clique: {X=(\d+), Y=(\d+)}");
-            var dragRegex = new Regex(@"Arrastando: {X=(\d+), Y=(\d+)} até {X=(\d+), Y=(\d+)}");
-            var doubleClickRegex = new Regex(@"Duplo Clique: {X=(\d+), Y=(\d+)}");
-            var keyPressRegex = new Regex(@"Tecla Pressionada: (\w+)");
+            var dragRegex = new Regex(@"Arrasto: {X=(\d+), Y=(\d+)} até {X=(\d+), Y=(\d+)}");
+            var doubleClickRegex = new Regex(@"Clique Duplo: {X=(\d+), Y=(\d+)}");
+            var keyPressRegex = new Regex(@"Tecla:\s*(.+)$", RegexOptions.Compiled);
+            var rightClickRegex = new Regex(@"Clique Direito: {X=(\d+), Y=(\d+)}");
 
             if (clickRegex.IsMatch(line))
             {
@@ -227,12 +228,23 @@ namespace snapAssist
             {
                 var match = keyPressRegex.Match(line);
                 string key = match.Groups[1].Value;
-
-                if (key == "Capital" || key == "ShiftKey")
-                    return;
-
                 SimulateKeyPress(key);
             }
+            else if (rightClickRegex.IsMatch(line))
+            {
+                var match = rightClickRegex.Match(line);
+                int x = int.Parse(match.Groups[1].Value);
+                int y = int.Parse(match.Groups[2].Value);
+                MouseRightClick(x, y);
+            }
+
+        }
+        private void MouseRightClick(int x, int y)
+        {
+            Cursor.Position = new Point(x, y);
+            MouseEvent(MouseEventFlags.RightDown);
+            Thread.Sleep(100);
+            MouseEvent(MouseEventFlags.RightUp);
         }
 
         // ================================================================
@@ -240,81 +252,153 @@ namespace snapAssist
         // ================================================================
         private void SimulateKeyPress(string key)
         {
+            if (string.IsNullOrWhiteSpace(key))
+                return;
+
+            const uint KEYEVENTF_KEYDOWN = 0x0000;
+            const uint KEYEVENTF_KEYUP = 0x0002;
+
             byte vkCode;
             bool shiftRequired = false;
+            bool ctrlRequired = false;
+            bool altRequired = false;
 
             switch (key)
             {
                 case "Space":
                     vkCode = (byte)Keys.Space;
                     break;
+
                 case "Enter":
+                case "Return":
                     vkCode = (byte)Keys.Enter;
                     break;
+
                 case "Tab":
                     vkCode = (byte)Keys.Tab;
                     break;
+
+                case "Back":
                 case "Backspace":
                     vkCode = (byte)Keys.Back;
                     break;
-                case "D0":
-                    vkCode = (byte)Keys.D0;
-                    break;
-                case "D1":
-                    vkCode = (byte)Keys.D1;
-                    break;
-                case "D2":
-                    vkCode = (byte)Keys.D2;
-                    break;
-                case "D3":
-                    vkCode = (byte)Keys.D3;
-                    break;
-                case "D4":
-                    vkCode = (byte)Keys.D4;
-                    break;
-                case "D5":
-                    vkCode = (byte)Keys.D5;
-                    break;
-                case "D6":
-                    vkCode = (byte)Keys.D6;
-                    break;
-                case "D7":
-                    vkCode = (byte)Keys.D7;
-                    break;
-                case "D8":
-                    vkCode = (byte)Keys.D8;
-                    break;
-                case "D9":
-                    vkCode = (byte)Keys.D9;
-                    break;
-                default:
-                    char upperKey = char.ToUpper(key[0]);
-                    vkCode = (byte)VkKeyScan(upperKey);
 
-                    if (char.IsUpper(key[0]))
+                case "Escape":
+                    vkCode = (byte)Keys.Escape;
+                    break;
+
+                case "LShiftKey":
+                case "RShiftKey":
+                case "ShiftKey":
+                    vkCode = (byte)Keys.ShiftKey;
+                    break;
+
+                case "LControlKey":
+                case "RControlKey":
+                case "ControlKey":
+                    vkCode = (byte)Keys.ControlKey;
+                    break;
+
+                case "LMenu":    // Alt esquerdo
+                case "RMenu":    // Alt direito
+                case "Menu":     // Alt genérico
+                    vkCode = (byte)Keys.Menu;
+                    break;
+
+                case "Capital":  // CapsLock
+                case "CapsLock":
+                    vkCode = (byte)Keys.Capital;
+                    break;
+
+                // Números D0..D9 (linha superior do teclado)
+                case "D0":
+                case "D1":
+                case "D2":
+                case "D3":
+                case "D4":
+                case "D5":
+                case "D6":
+                case "D7":
+                case "D8":
+                case "D9":
+                    if (!Enum.TryParse<Keys>(key, out var numKey))
+                        return;
+                    vkCode = (byte)numKey;
+                    break;
+
+                // Exemplos de OEM (ajuste conforme o que seu hook realmente grava)
+                case "OemPeriod":
+                    vkCode = (byte)Keys.OemPeriod;
+                    break;
+
+                case "OemComma":
+                    vkCode = (byte)Keys.Oemcomma;
+                    break;
+
+                case "OemMinus":
+                    vkCode = (byte)Keys.OemMinus;
+                    break;
+
+                case "OemPlus":
+                    vkCode = (byte)Keys.Oemplus;
+                    break;
+
+                default:
+                    // Se veio só 1 caractere (ex.: "a", "A", ";", "&"), usar VkKeyScan
+                    if (key.Length == 1)
                     {
-                        shiftRequired = true;
+                        char ch = key[0];
+                        short vk = VkKeyScan(ch);
+
+                        if (vk == -1)
+                            return; // não mapeado
+
+                        vkCode = (byte)(vk & 0xFF);
+
+                        byte modifiers = (byte)((vk >> 8) & 0xFF);
+
+                        // bit 0 = SHIFT, bit 1 = CTRL, bit 2 = ALT
+                        shiftRequired = (modifiers & 1) != 0;
+                        ctrlRequired = (modifiers & 2) != 0;
+                        altRequired = (modifiers & 4) != 0;
+                    }
+                    else
+                    {
+                        // Tenta interpretar pelo nome do enum Keys (NumPad1, F1, etc.)
+                        if (!Enum.TryParse<Keys>(key, ignoreCase: true, out var keyEnum))
+                            return;
+
+                        vkCode = (byte)keyEnum;
                     }
                     break;
             }
 
-            const uint KEYEVENTF_KEYDOWN = 0x0000;
-            const uint KEYEVENTF_KEYUP = 0x0002;
+            // Pressiona modificadores se necessário
+            if (ctrlRequired)
+                keybd_event((byte)Keys.ControlKey, 0, KEYEVENTF_KEYDOWN, UIntPtr.Zero);
+
+            if (altRequired)
+                keybd_event((byte)Keys.Menu, 0, KEYEVENTF_KEYDOWN, UIntPtr.Zero);
 
             if (shiftRequired)
-            {
                 keybd_event((byte)Keys.ShiftKey, 0, KEYEVENTF_KEYDOWN, UIntPtr.Zero);
-            }
 
+            // Tecla principal
             keybd_event(vkCode, 0, KEYEVENTF_KEYDOWN, UIntPtr.Zero);
             Thread.Sleep(50);
             keybd_event(vkCode, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
 
+            // Solta modificadores
             if (shiftRequired)
-            {
                 keybd_event((byte)Keys.ShiftKey, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
-            }
+
+            if (altRequired)
+                keybd_event((byte)Keys.Menu, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
+
+            if (ctrlRequired)
+                keybd_event((byte)Keys.ControlKey, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
         }
+
 
         // ================================================================
         // SIMULAÇÃO DE MOUSE
@@ -349,7 +433,7 @@ namespace snapAssist
             MouseEvent(MouseEventFlags.LeftDown);
             Thread.Sleep(100);
             MouseEvent(MouseEventFlags.LeftUp);
-            Console.WriteLine($"Duplo clique em {x}, {y}");
+            Console.WriteLine($"Clique Duplo em {x}, {y}");
         }
 
         private void MouseEvent(MouseEventFlags value)

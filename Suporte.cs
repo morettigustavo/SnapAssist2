@@ -22,6 +22,7 @@ namespace snapAssist
 
         Image ImageShow = null;
         private bool isImageLoading = false;
+        FtpClient ftpClient = null;
 
         public Suporte(string ip, string password)
         {
@@ -39,9 +40,10 @@ namespace snapAssist
 
             this.KeyPreview = true;
             this.KeyDown += Suporte_KeyDown;
+            this.KeyPress += Suporte_KeyPress;
 
             timer = new Timer();
-            timer.Interval = 500;
+            timer.Interval = 1;
             timer.Tick += new EventHandler(LoadImage);
             timer.Start();
         }
@@ -168,7 +170,7 @@ namespace snapAssist
             int adjustedX = (int)(e.X * (float)ImageShow.Width / pictureBox1.Width);
             int adjustedY = (int)(e.Y * (float)ImageShow.Height / pictureBox1.Height);
 
-            LogMouseAction($"Duplo Clique: {{X={adjustedX}, Y={adjustedY}}}");
+            LogMouseAction($"Clique Duplo: {{X={adjustedX}, Y={adjustedY}}}");
         }
 
         private void PictureBox1_MouseDown(object sender, MouseEventArgs e)
@@ -214,23 +216,26 @@ namespace snapAssist
 
         private void Suporte_KeyDown(object sender, KeyEventArgs e)
         {
-            string k;
-
             if (e.KeyCode >= Keys.A && e.KeyCode <= Keys.Z)
-            {
-                bool caps = Control.IsKeyLocked(Keys.CapsLock);
+                return;
 
-                if (caps ^ e.Shift)
-                    k = e.KeyCode.ToString();
-                else
-                    k = e.KeyCode.ToString().ToLower();
-            }
-            else
-            {
-                k = e.KeyCode.ToString();
-            }
+            if (e.KeyCode >= Keys.D0 && e.KeyCode <= Keys.D9)
+                return;
 
-            UpdateLog($"Tecla: {k}");
+            if (e.KeyCode == Keys.Space)
+                return;
+
+            UpdateLog($"Tecla: {e.KeyCode}");
+        }
+
+        private void Suporte_KeyPress(object sender, KeyPressEventArgs e)
+        {
+            char c = e.KeyChar;
+
+            if (char.IsControl(c))
+                return;
+
+            UpdateLog($"Tecla: {c}");
         }
 
         protected override void OnFormClosed(FormClosedEventArgs e)
